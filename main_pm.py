@@ -1,141 +1,96 @@
-import gym
-import numpy as np
+import pandas as pd
 import tensorflow as tf
-from tensorflow.keras import layers # type: ignore
-import cvxpy as cp
+from src.environment import EnergyStorageEnv
+from src.agent import DDPGAgent
+from src.utils import create_initial_state
 
-# Custom Environment for Energy Storage Arbitrage
-class EnergyStorageEnv(gym.Env):
-    def __init__(self, prices, price_taker_bids):
-        self.prices = prices
-        self.price_taker_bids = price_taker_bids
-        self.max_storage = 10.0  # Max storage capacity
-        self.efficiency = 0.9  # Round-trip efficiency
-        self.time_step = 0
-        self.storage = 5.0  # Initial state of charge (SoC)
-        self.action_space = gym.spaces.Box(low=0, high=100, shape=(2,), dtype=np.float32)  # Bidding prices for charge and discharge
-        self.observation_space = gym.spaces.Box(low=0, high=np.max(prices), shape=(3,), dtype=np.float32)  # Include price-taker bid
+# Simulation Parameters
+num_days = 365
+num_steps = 288
+num_intervals = 12
 
-    def reset(self):
-        self.time_step = 0
-        self.storage = 5.0
-        return np.array([self.storage, self.prices[self.time_step], self.price_taker_bids[self.time_step]])
+# Load the data
+net_load_data = pd.read_csv('data/CAISO_Load_2022.csv', usecols=['net_load']).values.flatten()
+prices_file = 'data/initial_state/clearing_prices.csv'
+load_file = 'data/initial_state/CAISO_Load_Ini.csv'
+operations_file = 'data/initial_state/storage_operations.csv'
+initial_state_data = create_initial_state(prices_file, load_file, operations_file)
 
-    def step(self, action):
-        charge_bid, discharge_bid = action
-        price = self.prices[self.time_step]
+# Generator data 
+thermal_gen_data = pd.read_csv('data/thermal_gen_offer.csv')
+P_g = thermal_gen_data['capacity_MW'].values
+C_g = thermal_gen_data['energy_price'].values
+num_gen = len(P_g)
 
-        # Market clearing optimization
-        charge_power = cp.Variable()
-        discharge_power = cp.Variable()
+# Storage parameters
+num_segments = 1
+P = 10000  # Total storage capacity in MW
+E = 40000  # Total storage capacity in MWh
+eta = 0.9  # Storage one-way efficiency
+C_s = 20.0  # Storage marginal discharge cost
+model = tf.keras.models.load_model('models/model0')
 
-        constraints = [
-            charge_power >= 0,
-            discharge_power >= 0,
-            charge_power * self.efficiency <= self.max_storage - self.storage,
-            discharge_power / self.efficiency <= self.storage
-        ]
+# Define the minimum steps to start learning
+min_steps_to_learn = 288
+env = EnergyStorageEnv(num_segments=num_segments, initial_state=initial_state_data, net_load_data=net_load_data, P_g=P_g, C_g=C_g, P=P, E=E, eta=eta, C_s=C_s, num_intervals=num_intervals, num_gen=num_gen, model=model)
+state_dim = env.observation_space.shape[0]
+action_dim = env.action_space.shape[0]
+agent = DDPGAgent(state_dim, action_dim, min_steps_to_learn=min_steps_to_learn)
 
-        objective = cp.Minimize(charge_bid * charge_power - discharge_bid * discharge_power)
-        prob = cp.Problem(objective, constraints)
-        prob.solve()
+episodes = 52
+steps_per_episode = 288 * 7
 
-        # Get the power values after market clearing
-        charge_power = charge_power.value
-        discharge_power = discharge_power.value
+# Initialize list to store step data
+step_data = []
 
-        # Calculate new state of charge (SoC)
-        self.storage = min(self.max_storage, max(0, self.storage + charge_power * self.efficiency - discharge_power / self.efficiency))
+for episode in range(episodes):
+    if episode == 0:
+        state = env.reset(initial_state=initial_state_data)
+    else:
+        state = env.reset(initial_state=state)
+    
+    episode_reward = 0
+    
+    for step in range(steps_per_episode):
+        current_step = step + episode * steps_per_episode
+        action = agent.get_action(state, current_step)
+        next_state, reward, done, discharge, charge, real_time_price, unadjusted_charge_bid, unadjusted_discharge_bid, adjusted_charge_bid, adjusted_discharge_bid = env.step(action)
+        
+        if reward != 0:
+            print("Real-time price is in the adjusted bids.")
+            agent.remember(state, action, reward, next_state, done)
+        agent.replay()  # Ensure replay is called to update the policy
+        
+        state = next_state
+        episode_reward += reward / P
+        
+        # Record step data
+        step_data.append([
+            episode, step, discharge, charge, real_time_price,
+            unadjusted_charge_bid, unadjusted_discharge_bid,
+            adjusted_charge_bid, adjusted_discharge_bid,
+            action, reward / P
+        ])
+        
+        # Print the action taken at each step
+        print(f"Episode: {episode + 1}, Step: {step + 1}, Action: {action}, Reward: {episode_reward}")
+        
+        if done:
+            break
+    
+    print(f"Episode {episode + 1}/{episodes}, Reward: {episode_reward}")
 
-        # Calculate reward based on the current price and power
-        reward = charge_power * price - discharge_power * price
+    if env.current_step >= len(net_load_data):
+        break
 
-        self.time_step += 1
-        done = self.time_step >= len(self.prices) - 1
-        next_state = np.array([self.storage, self.prices[self.time_step], self.price_taker_bids[self.time_step]])
+# Save step data to a CSV file
+columns = [
+    'Episode', 'Step', 'Discharge', 'Charge', 'Real_Time_Price',
+    'Unadjusted_Charge_Bid', 'Unadjusted_Discharge_Bid',
+    'Adjusted_Charge_Bid', 'Adjusted_Discharge_Bid',
+    'Action_Charge_Adjustment', 'Reward'
+]
+step_df = pd.DataFrame(step_data, columns=columns)
+step_df.to_csv('results/step_data.csv', index=False)
 
-        return next_state, reward, done, {}
-
-    def render(self, mode='human'):
-        pass
-
-# Actor-Critic Networks
-def create_actor():
-    model = tf.keras.Sequential([
-        layers.Dense(24, activation='relu'),
-        layers.Dense(24, activation='relu'),
-        layers.Dense(2, activation='linear')  # Bidding prices for charge and discharge
-    ])
-    return model
-
-def create_critic():
-    model = tf.keras.Sequential([
-        layers.Dense(24, activation='relu'),
-        layers.Dense(24, activation='relu'),
-        layers.Dense(1)
-    ])
-    return model
-
-# Training the Actor-Critic Model
-def train(env, actor, critic, price_taker_bids, episodes=1000, gamma=0.99, actor_lr=0.001, critic_lr=0.002, k=0.5):
-    actor_optimizer = tf.keras.optimizers.Adam(learning_rate=actor_lr)
-    critic_optimizer = tf.keras.optimizers.Adam(learning_rate=critic_lr)
-    mse_loss = tf.keras.losses.MeanSquaredError()
-
-    for episode in range(episodes):
-        state = env.reset()
-        total_reward = 0
-
-        for step in range(len(env.prices) - 1):
-            state = tf.convert_to_tensor([state], dtype=tf.float32)
-
-            # Get policy action (a_A) from the actor network
-            policy_action = actor(state).numpy()
-
-            # Generate exploration action (a_E)
-            exploration_action = np.random.uniform(low=-1, high=1, size=policy_action.shape)
-
-            # Supervised action (a_S)
-            supervised_action = price_taker_bids[step]
-
-            # Combine actions
-            action = (1 - k) * (policy_action + exploration_action) + k * supervised_action
-
-            next_state, reward, done, _ = env.step(action)
-            total_reward += reward
-
-            next_state = tf.convert_to_tensor([next_state], dtype=tf.float32)
-            reward = tf.convert_to_tensor(reward, dtype=tf.float32)
-
-            value = critic(state)
-            next_value = critic(next_state)
-
-            target = reward + gamma * next_value * (1 - int(done))
-            td_error = target - value
-
-            # Critic update
-            with tf.GradientTape() as tape:
-                critic_loss = td_error ** 2
-            critic_grads = tape.gradient(critic_loss, critic.trainable_variables)
-            critic_optimizer.apply_gradients(zip(critic_grads, critic.trainable_variables))
-
-            # Actor update with supervised action
-            with tf.GradientTape() as actor_tape:
-                actor_loss = mse_loss(actor(state), supervised_action)
-            actor_grads = actor_tape.gradient(actor_loss, actor.trainable_variables)
-            actor_optimizer.apply_gradients(zip(actor_grads, actor.trainable_variables))
-
-            state = next_state.numpy()[0]
-            if done:
-                break
-
-        print(f'Episode {episode + 1}: Total Reward: {total_reward}')
-
-# Simulated price data and price-taker bids
-prices = np.sin(np.linspace(0, 20, 100)) * 10 + 50
-price_taker_bids = np.random.uniform(0, 100, size=(100, 2))  # Example price-taker bids for charge and discharge
-
-env = EnergyStorageEnv(prices, price_taker_bids)
-actor = create_actor()
-critic = create_critic()
-train(env, actor, critic, price_taker_bids)
+print("Simulation complete. Step data saved to 'step_data.csv'.")

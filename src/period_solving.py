@@ -2,7 +2,7 @@ import cvxpy as cp
 import time
 
 # Function to solve the optimization problem for a single period
-def solve_period_optimization(L, P_g, C_g, P, E, eta, C_s, E0, num_intervals, num_gen, num_seg, soc_bids):
+def solve_period_optimization(L, P_g, C_g, P, E, eta, C_s, E0, num_intervals, num_gen, num_seg, discharge_bids, charge_bids):
     # Variables
     p = cp.Variable(num_gen)  # Power generation by each generator
     c = cp.Variable(num_seg)             # Power charge by storage
@@ -39,8 +39,8 @@ def solve_period_optimization(L, P_g, C_g, P, E, eta, C_s, E0, num_intervals, nu
 
     # Objective: Minimize system cost
     cost = (cp.sum(cp.multiply(p, C_g.flatten())) + 
-            cp.sum(cp.multiply(E0-e, soc_bids)) +
-            cp.sum(C_s * d)) / num_intervals
+            cp.sum(cp.multiply(d, discharge_bids)) -
+            cp.sum(cp.multiply(c, charge_bids))) / num_intervals
     objective = cp.Minimize(cost)
 
     # Problem definition

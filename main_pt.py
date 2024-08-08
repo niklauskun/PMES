@@ -12,7 +12,7 @@ model = tf.keras.models.load_model('models/model0')
 
 
 # Parameters
-num_days = 365
+num_days = 2
 num_steps = 288
 num_intervals = 12
 P = 1  # Total storage capacity in MW
@@ -25,7 +25,7 @@ P_g = thermal_gen_data['capacity_MW'].values # Thermal generator capacities (MW)
 C_g = thermal_gen_data['energy_price'].values # Thermal generator offer ($/MW)
 
 # Storage segment data
-num_seg = 1
+num_seg = 5
 
 # Reshape load data for num_days of num_steps
 load = load_data[0:num_days*num_steps].reshape((num_days, num_steps)) # Net load profile
@@ -77,7 +77,9 @@ for day in range(num_days):
             L_ts = L[ts]
             v = model.predict(predictors, verbose=0).T
             soc_bids = np.mean(v.reshape(num_seg, int(v.shape[0]/num_seg)), axis=1, keepdims=True).flatten()
-            step_cost, step_gen, step_charge, step_discharge, step_soc, dual_price, storage_profit, run_time = solve_period_optimization(L_ts, P_g, C_g, P, E, eta, C_s, E0, num_intervals, num_gen, num_seg, soc_bids)
+            discharge_bids = soc_bids / eta + C_s
+            charge_bids = soc_bids * eta
+            step_cost, step_gen, step_charge, step_discharge, step_soc, dual_price, storage_profit, run_time = solve_period_optimization(L_ts, P_g, C_g, P, E, eta, C_s, E0, num_intervals, num_gen, num_seg, discharge_bids, charge_bids)
             storage_profit_cum += storage_profit/E*4
             print(f"Day {day + 1}: Step = {ts} Storage Profit = {storage_profit_cum}")
 
