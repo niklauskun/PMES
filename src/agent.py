@@ -28,24 +28,24 @@ class DDPGAgent:
         self.update_target(self.target_actor.variables, self.actor.variables, tau=1.0)
         self.update_target(self.target_critic.variables, self.critic.variables, tau=1.0)
     
-    # def build_actor(self):
-    #     initializer = tf.keras.initializers.HeNormal()  # Use He initialization
-    #     inputs = layers.Input(shape=(self.state_dim,))
-    #     out = layers.Dense(256, activation='relu', kernel_initializer=initializer)(inputs)
-    #     out = layers.Dense(256, activation='relu', kernel_initializer=initializer)(out)
-    #     outputs = layers.Dense(self.action_dim, activation='sigmoid', kernel_initializer=initializer)(out)
-    #     outputs = layers.Lambda(lambda x: x * 20)(outputs)  # Scale actions to range [-10, 10]
-    #     model = keras.Model(inputs, outputs)
-    #     return model
-
     def build_actor(self):
         initializer = tf.keras.initializers.HeNormal()  # Use He initialization
         inputs = layers.Input(shape=(self.state_dim,))
         out = layers.Dense(256, activation='relu', kernel_initializer=initializer)(inputs)
         out = layers.Dense(256, activation='relu', kernel_initializer=initializer)(out)
-        outputs = layers.Dense(self.action_dim, activation='relu', kernel_initializer=initializer)(out)  # Use ReLU to ensure non-negative outputs
+        outputs = layers.Dense(self.action_dim, activation='sigmoid', kernel_initializer=initializer)(out)
+        outputs = layers.Lambda(lambda x: x * 10)(outputs)  # Scale actions to range [-10, 10]
         model = keras.Model(inputs, outputs)
         return model
+
+    # def build_actor(self):
+    #     initializer = tf.keras.initializers.HeNormal()  # Use He initialization
+    #     inputs = layers.Input(shape=(self.state_dim,))
+    #     out = layers.Dense(256, activation='relu', kernel_initializer=initializer)(inputs)
+    #     out = layers.Dense(256, activation='relu', kernel_initializer=initializer)(out)
+    #     outputs = layers.Dense(self.action_dim, activation='relu', kernel_initializer=initializer)(out)  # Use ReLU to ensure non-negative outputs
+    #     model = keras.Model(inputs, outputs)
+    #     return model
 
     def build_critic(self):
         initializer = tf.keras.initializers.HeNormal()  # Use He initialization
@@ -74,10 +74,10 @@ class DDPGAgent:
             return np.zeros(self.action_dim)  # Return zeros if not enough steps have been taken
         state = np.reshape(state, (1, self.state_dim))
         action = self.actor(state).numpy()[0]
-        noise = np.random.uniform(0, 5, self.action_dim)  # Add random noise from 0 to 0.1
+        noise = np.random.uniform(0, 2, self.action_dim)  # Add random noise from 0 to 0.1
         action = action + noise
-        # return np.clip(action, 0, 20)  # Clip actions to range [0, 100]
-        return action  # No need to clip, as action space is [0, inf]
+        return np.clip(action, 0, 10)  # Clip actions to range [0, 100]
+        # return action  # No need to clip, as action space is [0, inf]
     
     
     def remember(self, state, action, reward, next_state, done):

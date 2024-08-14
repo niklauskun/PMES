@@ -10,7 +10,7 @@ class EnergyStorageEnv(gym.Env):
         super(EnergyStorageEnv, self).__init__()
         
         self.num_segments = num_segments
-        self.action_space = spaces.Box(low=0, high=20.0, shape=(self.num_segments,), dtype=np.float32)
+        self.action_space = spaces.Box(low=0, high=10.0, shape=(self.num_segments,), dtype=np.float32)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(865,), dtype=np.float32)
         
         self.state = None
@@ -58,7 +58,7 @@ class EnergyStorageEnv(gym.Env):
                     adjusted_discharge_bid, adjusted_charge_bid
                 )        
         
-        reward = real_time_price * (discharge - charge)
+        reward = real_time_price * (discharge - charge) - self.C_s * discharge
         
         self.state[:288] = np.append(self.state[1:288], discharge - charge)
         self.state[288] = soc
