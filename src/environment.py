@@ -10,8 +10,10 @@ class EnergyStorageEnv(gym.Env):
         super(EnergyStorageEnv, self).__init__()
         
         self.num_segments = num_segments
-        self.action_space = spaces.Box(low=0, high=10.0, shape=(self.num_segments,), dtype=np.float32)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(865,), dtype=np.float32)
+        self.num_steps = num_intervals*24  # Assuming 5-minute intervals in a day
+        # self.action_space = spaces.Box(low=0, high=10.0, shape=(self.num_segments,), dtype=np.float32)
+        self.action_space = spaces.Box(low=0, high=2.0, shape=(self.num_segments * 2,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(866,), dtype=np.float32)
         
         self.state = None
         self.initial_state = initial_state
@@ -38,13 +40,23 @@ class EnergyStorageEnv(gym.Env):
             self.state = np.array(initial_state)
         else:
             self.state = np.array(self.initial_state) if self.initial_state is not None else np.zeros((865,))        
+
+        self.current_step = 0
+        self.update_time_of_day()  # Add time of day to the state
         return self.state
     
     def step(self, action):
+        action = action.reshape((self.num_segments, 2))
+        charge_adjustment = action[:, 0]  # Values in range [0, 1]
+        discharge_adjustment = action[:, 1]  # Values in range [1, 2]
+
         unadjusted_charge_bid, unadjusted_discharge_bid = self.get_unadjusted_bids()
 
-        adjusted_charge_bid = unadjusted_charge_bid - action * self.eta
-        adjusted_discharge_bid = unadjusted_discharge_bid + action / self.eta
+        adjusted_charge_bid = unadjusted_charge_bid * charge_adjustment
+        adjusted_discharge_bid = unadjusted_discharge_bid * discharge_adjustment
+
+        # adjusted_charge_bid = unadjusted_charge_bid - action * self.eta
+        # adjusted_discharge_bid = unadjusted_discharge_bid + action / self.eta
         
         # adjustment_charge = action[:self.num_segments]
         # adjustment_discharge = action[self.num_segments:]
@@ -56,9 +68,17 @@ class EnergyStorageEnv(gym.Env):
                     self.P_g, self.C_g, self.P, self.E, self.eta, self.C_s, 
                     self.state[288], self.num_intervals, self.num_gen, self.num_segments,
                     adjusted_discharge_bid, adjusted_charge_bid
-                )        
+                )
+        if real_time_price > unadjusted_charge_bid and real_time_price < unadjusted_discharge_bid:
+            reward = 1
+        elif real_time_price <= unadjusted_charge_bid and real_time_price > adjusted_charge_bid:
+            reward = -5
+        elif real_time_price >= unadjusted_discharge_bid and real_time_price < adjusted_discharge_bid:
+            reward = -5
+        else:
+            reward = (real_time_price * (discharge - charge) - self.C_s * discharge) / self.P
         
-        reward = real_time_price * (discharge - charge) - self.C_s * discharge
+        revenue = (real_time_price * (discharge - charge) - self.C_s * discharge) / self.P
         
         self.state[:288] = np.append(self.state[1:288], discharge - charge)
         self.state[288] = soc
@@ -66,10 +86,18 @@ class EnergyStorageEnv(gym.Env):
         self.state[577:865] = np.append(self.state[578:865], self.net_load_data[self.current_step])
         
         self.current_step += 1
-        
+        self.update_time_of_day()  # Update time of day in the state
+
         done = self.current_step >= len(self.net_load_data)
-        return self.state, reward, done, discharge, charge, real_time_price, unadjusted_charge_bid, unadjusted_discharge_bid, adjusted_charge_bid, adjusted_discharge_bid
+        return self.state, reward, revenue, done, discharge, charge, real_time_price, unadjusted_charge_bid, unadjusted_discharge_bid, adjusted_charge_bid, adjusted_discharge_bid
     
+    def update_time_of_day(self):
+        # Calculate the time of day as an integer between 1 and 288
+        time_of_day = (self.current_step % self.num_steps) + 1
+        
+        # Add the time of day to the state as the last value
+        self.state = np.concatenate((self.state[:865], [time_of_day]))
+
     def market_clearing_model(self, L, P_g, C_g, P, E, eta, C_s, E0, num_intervals, num_gen, num_seg, discharge_bids, charge_bids):
         p = cp.Variable(num_gen)
         c = cp.Variable(num_seg)
@@ -123,5 +151,4 @@ class EnergyStorageEnv(gym.Env):
         discharge_bids = soc_bids / self.eta + self.C_s
         charge_bids = soc_bids * self.eta
         return charge_bids, discharge_bids
-
 
