@@ -1,8 +1,13 @@
 import pandas as pd
+import numpy as np
 import tensorflow as tf
 from src.environment import EnergyStorageEnv
-from src.agent import DDPGAgent
+from src.agent import DDPGAgent, DQNAgent
 from src.utils import create_initial_state
+
+# Set the algorithm you want to use: 'ddpg' or 'dqn'
+# algorithm = 'ddpg'
+algorithm = 'dqn'  
 
 # Simulation Parameters
 num_days = 365
@@ -31,11 +36,17 @@ C_s = 20.0  # Storage marginal discharge cost
 model = tf.keras.models.load_model('models/model0.h5')
 
 # Define the minimum steps to start learning
-min_steps_to_learn = 288
-env = EnergyStorageEnv(num_segments=num_segments, initial_state=initial_state_data, net_load_data=net_load_data, P_g=P_g, C_g=C_g, P=P, E=E, eta=eta, C_s=C_s, num_intervals=num_intervals, num_gen=num_gen, model=model)
+min_steps_to_learn = 2016
+env = EnergyStorageEnv(algorithm='dqn', num_segments=num_segments, initial_state=initial_state_data, net_load_data=net_load_data, P_g=P_g, C_g=C_g, P=P, E=E, eta=eta, C_s=C_s, num_intervals=num_intervals, num_gen=num_gen, model=model)
 state_dim = env.observation_space.shape[0]
-action_dim = env.action_space.shape[0]
-agent = DDPGAgent(state_dim, action_dim, min_steps_to_learn=min_steps_to_learn)
+
+# Choose the agent based on the algorithm parameter
+if algorithm == 'ddpg':
+    action_dim = env.action_space.shape[0]
+    agent = DDPGAgent(state_dim, action_dim, min_steps_to_learn=min_steps_to_learn)
+elif algorithm == 'dqn':
+    action_dim = env.action_space.n  # For DQN, the action space should be discrete
+    agent = DQNAgent(state_dim, action_dim)
 
 episodes = 52
 steps_per_episode = 288 * 7
@@ -54,12 +65,18 @@ for episode in range(episodes):
     
     for step in range(steps_per_episode):
         current_step = step + episode * steps_per_episode
-        action = agent.get_action(state, current_step)
+
+        # Select action based on the algorithm
+        if algorithm == 'ddpg':
+            action = agent.get_action(state, current_step)
+        elif algorithm == 'dqn':
+            action = agent.act(state)
+
         next_state, reward, revenue, done, discharge, charge, real_time_price, unadjusted_charge_bid, unadjusted_discharge_bid, adjusted_charge_bid, adjusted_discharge_bid = env.step(action)
-        
+
         agent.remember(state, action, reward, next_state, done)
-        agent.replay()  # Ensure replay is called to update the policy
-        
+        agent.replay()
+
         state = next_state
         episode_reward += reward
         episode_revenue += revenue
@@ -77,6 +94,10 @@ for episode in range(episodes):
         
         if done:
             break
+    
+    # Update the target network at the end of each episode
+    if algorithm == 'dqn':
+        agent.update_target_network()
     
     print(f"Episode {episode + 1}/{episodes}, Reward: {episode_reward}, Revenue: {episode_revenue}")
 

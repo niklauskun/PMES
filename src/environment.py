@@ -6,14 +6,22 @@ import time
 import tensorflow as tf
 
 class EnergyStorageEnv(gym.Env):
-    def __init__(self, num_segments=1, initial_state=None, net_load_data=None, P_g=None, C_g=None, P=1, E=4, eta=0.9, C_s=20.0, num_intervals=12, num_gen=1, model=None):
+    def __init__(self, algorithm='ddpg', num_segments=1, initial_state=None, net_load_data=None, P_g=None, C_g=None, P=1, E=4, eta=0.9, C_s=20.0, num_intervals=12, num_gen=1, model=None):
         super(EnergyStorageEnv, self).__init__()
         
         self.num_segments = num_segments
         self.num_steps = num_intervals*24  # Assuming 5-minute intervals in a day
-        # self.action_space = spaces.Box(low=0, high=10.0, shape=(self.num_segments,), dtype=np.float32)
-        self.action_space = spaces.Box(low=0, high=2.0, shape=(self.num_segments * 2,), dtype=np.float32)
+
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(866,), dtype=np.float32)
+
+        self.algorithm = algorithm  # Store the algorithm type
+        # Initialize action space based on the chosen algorithm
+        if self.algorithm == 'ddpg':
+            self.action_space = spaces.Box(low=0, high=0.2, shape=(self.num_segments,), dtype=np.float32)
+        elif self.algorithm == 'dqn':
+            self.action_space = spaces.Discrete(5)  # Example: 5 discrete actions
+        # self.action_space = spaces.Box(low=0, high=0.2, shape=(self.num_segments,), dtype=np.float32)
+        # self.action_space = spaces.Box(low=0, high=2.0, shape=(self.num_segments * 2,), dtype=np.float32)
         
         self.state = None
         self.initial_state = initial_state
@@ -46,14 +54,38 @@ class EnergyStorageEnv(gym.Env):
         return self.state
     
     def step(self, action):
-        action = action.reshape((self.num_segments, 2))
-        charge_adjustment = action[:, 0]  # Values in range [0, 1]
-        discharge_adjustment = action[:, 1]  # Values in range [1, 2]
-
         unadjusted_charge_bid, unadjusted_discharge_bid = self.get_unadjusted_bids()
 
-        adjusted_charge_bid = unadjusted_charge_bid * charge_adjustment
-        adjusted_discharge_bid = unadjusted_discharge_bid * discharge_adjustment
+        # action = action.reshape((self.num_segments, 2))
+        # charge_adjustment = action[:, 0]  # Values in range [0, 1]
+        # discharge_adjustment = action[:, 1]  # Values in range [1, 2]
+
+        if self.algorithm == 'ddpg':
+            # DDPG: action is continuous
+            adjustment = action  # action is already in the form of a continuous adjustment factor
+        elif self.algorithm == 'dqn':
+            if action == 0:
+                withholding_charge = 0.10  # 10% charging bid withholding
+                withholding_discharge = 0.0
+            elif action == 1:
+                withholding_charge = 0.05  # 5% charging bid withholding
+                withholding_discharge = 0.0
+            elif action == 2:
+                withholding_charge = 0.0   # No withholding
+                withholding_discharge = 0.0
+            elif action == 3:
+                withholding_charge = 0.0
+                withholding_discharge = 0.05  # 5% discharging bid withholding
+            elif action == 4:
+                withholding_charge = 0.0
+                withholding_discharge = 0.10  # 10% discharging bid withholding
+
+        # Apply the withholding to adjust the bids
+        adjusted_charge_bid = unadjusted_charge_bid * (1 - withholding_charge)
+        adjusted_discharge_bid = unadjusted_discharge_bid * (1 + withholding_discharge)
+
+        # adjusted_charge_bid = unadjusted_charge_bid * charge_adjustment
+        # adjusted_discharge_bid = unadjusted_discharge_bid * discharge_adjustment
 
         # adjusted_charge_bid = unadjusted_charge_bid - action * self.eta
         # adjusted_discharge_bid = unadjusted_discharge_bid + action / self.eta
@@ -70,11 +102,11 @@ class EnergyStorageEnv(gym.Env):
                     adjusted_discharge_bid, adjusted_charge_bid
                 )
         if real_time_price > unadjusted_charge_bid and real_time_price < unadjusted_discharge_bid:
-            reward = 1
+            reward = 0.1
         elif real_time_price <= unadjusted_charge_bid and real_time_price > adjusted_charge_bid:
-            reward = -5
+            reward = -100
         elif real_time_price >= unadjusted_discharge_bid and real_time_price < adjusted_discharge_bid:
-            reward = -5
+            reward = -100
         else:
             reward = (real_time_price * (discharge - charge) - self.C_s * discharge) / self.P
         
