@@ -4,6 +4,8 @@ import tensorflow.keras as keras # type: ignore
 from tensorflow.keras import layers # type: ignore
 from collections import deque
 import random
+import gc
+
 
 class DDPGAgent:
     def __init__(self, state_dim, action_dim, min_steps_to_learn=1000):
@@ -162,11 +164,11 @@ class DQNAgent:
         self.action_dim = action_dim
         self.gamma = 0.99
         self.epsilon = 1.0  # Epsilon for epsilon-greedy strategy
-        self.epsilon_decay = 0.995
+        self.epsilon_decay = 0.9999
         self.epsilon_min = 0.01
         self.learning_rate = 0.001
-        self.memory = deque(maxlen=2000)
-        self.batch_size = 64
+        self.memory = deque(maxlen=288)
+        self.batch_size = 32
 
         self.q_network = self.build_q_network()
         self.target_q_network = self.build_q_network()
@@ -215,6 +217,16 @@ class DQNAgent:
                 q_values[i][actions[i]] = rewards[i] + self.gamma * np.amax(target_q_values[i])
 
         self.q_network.fit(states, q_values, epochs=1, verbose=0)
+        print_memory_usage()
+
+        gc.collect()
 
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
+
+import psutil
+import os
+
+def print_memory_usage():
+    process = psutil.Process(os.getpid())
+    print(f"Memory usage: {process.memory_info().rss / 1024 ** 2:.2f} MB")

@@ -27,6 +27,7 @@ class EnergyStorageEnv(gym.Env):
         self.initial_state = initial_state
         self.net_load_data = net_load_data
         self.current_step = 0
+        self.average_price = 0
 
         # Generator data
         self.P_g = P_g
@@ -53,7 +54,7 @@ class EnergyStorageEnv(gym.Env):
         self.update_time_of_day()  # Add time of day to the state
         return self.state
     
-    def step(self, action):
+    def step(self, action, smooth = 0.90):
         unadjusted_charge_bid, unadjusted_discharge_bid = self.get_unadjusted_bids()
 
         # action = action.reshape((self.num_segments, 2))
@@ -98,22 +99,32 @@ class EnergyStorageEnv(gym.Env):
         real_time_price, discharge, charge, soc = self.market_clearing_model(
                     self.net_load_data[self.current_step], 
                     self.P_g, self.C_g, self.P, self.E, self.eta, self.C_s, 
-                    self.state[288], self.num_intervals, self.num_gen, self.num_segments,
+                    self.state[288] * self.E, self.num_intervals, self.num_gen, self.num_segments,
                     adjusted_discharge_bid, adjusted_charge_bid
                 )
-        if real_time_price > unadjusted_charge_bid and real_time_price < unadjusted_discharge_bid:
-            reward = 0.1
-        elif real_time_price <= unadjusted_charge_bid and real_time_price > adjusted_charge_bid:
-            reward = -100
-        elif real_time_price >= unadjusted_discharge_bid and real_time_price < adjusted_discharge_bid:
-            reward = -100
+        
+        if self.current_step == 0:
+            self.average_price = real_time_price
         else:
-            reward = (real_time_price * (discharge - charge) - self.C_s * discharge) / self.P
+            self.average_price = smooth * self.average_price + (1 - smooth) * real_time_price
+
+        # reward = (real_time_price * (discharge - charge) - self.C_s * discharge) / self.P
+
+        reward = ((real_time_price - self.average_price) * (discharge - charge)) / self.P
+
+        # if real_time_price > unadjusted_charge_bid and real_time_price < unadjusted_discharge_bid:
+        #     reward = 0.1
+        # elif real_time_price <= unadjusted_charge_bid and real_time_price > adjusted_charge_bid:
+        #     reward = -100
+        # elif real_time_price >= unadjusted_discharge_bid and real_time_price < adjusted_discharge_bid:
+        #     reward = -100
+        # else:
+        #     reward = (real_time_price * (discharge - charge) - self.C_s * discharge) / self.P
         
         revenue = (real_time_price * (discharge - charge) - self.C_s * discharge) / self.P
         
         self.state[:288] = np.append(self.state[1:288], discharge - charge)
-        self.state[288] = soc
+        self.state[288] = soc / self.E
         self.state[289:577] = np.append(self.state[290:577], real_time_price)
         self.state[577:865] = np.append(self.state[578:865], self.net_load_data[self.current_step])
         
